@@ -1186,7 +1186,7 @@
     // Helper function to get exact sender case from database
     async function getExactSender(sender) {
       try {
-        const response = await fetch(`http://localhost:3000/api/sender/${encodeURIComponent(sender)}`);
+        const response = await fetch(`http://localhost:4004/api/sender/${encodeURIComponent(sender)}`);
         const data = await response.json();
         if (data.success && data.found) {
           console.log(`Found exact sender: "${data.sender}" for query: "${sender}"`);
@@ -1203,7 +1203,7 @@
       try {
         console.log('Fetching chats...');
         const res = await fetch(
-          'http://localhost:3000/api/conversations/detailed?limit=50'
+          'http://localhost:4004/api/conversations/detailed?limit=50'
         );
         if (!res.ok) {
           throw new Error(`HTTP ${res.status}: ${res.statusText}`);
@@ -1226,7 +1226,7 @@
       try {
         console.log('Fetching messages for sender:', sender);
         const res = await fetch(
-          `http://localhost:3000/api/conversations/${encodeURIComponent(
+          `http://localhost:4004/api/conversations/${encodeURIComponent(
             sender
           )}/messages?limit=50`
         );
@@ -1335,7 +1335,7 @@
       renderMobileChatHeader();
       fetchMessages(chat.sender);
       // Mark as read
-      fetch(`http://localhost:3000/api/conversations/${encodeURIComponent(chat.sender)}/mark-read`, {
+      fetch(`http://localhost:4004/api/conversations/${encodeURIComponent(chat.sender)}/mark-read`, {
         method: 'POST',
         headers: { 'x-api-key': 'your_secret_api_key_123' }
       });
@@ -1440,7 +1440,7 @@
       console.log('Sending mobile message to:', senderToUse);
 
       try {
-        const response = await fetch('http://localhost:3000/api/send', {
+        const response = await fetch('http://localhost:4004/api/send', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -1486,7 +1486,7 @@
       renderChatHeader();
       await fetchMessages(chat.sender);
       // Gọi API mark-read để đánh dấu đã đọc
-      await fetch(`http://localhost:3000/api/conversations/${encodeURIComponent(chat.sender)}/mark-read`, {
+      await fetch(`http://localhost:4004/api/conversations/${encodeURIComponent(chat.sender)}/mark-read`, {
         method: 'POST',
         headers: { 'x-api-key': 'your_secret_api_key_123' }
       });
@@ -1579,7 +1579,7 @@
       console.log('Sending message to:', senderToUse);
 
       try {
-        const response = await fetch('http://localhost:3000/api/send', {
+        const response = await fetch('http://localhost:4004/api/send', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -1641,7 +1641,7 @@
       checkTimeout = setTimeout(async () => {
         try {
           const response = await fetch(
-            `http://localhost:3000/api/check-imessage?to=${encodeURIComponent(
+            `http://localhost:4004/api/check-imessage?to=${encodeURIComponent(
               value.trim()
             )}`,
             { headers: { 'x-api-key': 'your_secret_api_key_123' } }
@@ -1735,7 +1735,7 @@
     });
 
     function connectSocket() {
-      socket = io('http://localhost:3000');
+      socket = io('http://localhost:4004');
       socket.on('connect', () => {
         console.log('🔌 Socket.IO connected');
       });
@@ -1763,7 +1763,7 @@
               await fetchMessages(currentChat.sender);
               // Tự động đánh dấu đã đọc khi đang ở đúng chat
               try {
-                await fetch(`http://localhost:3000/api/conversations/${encodeURIComponent(currentChat.sender)}/mark-read`, {
+                await fetch(`http://localhost:4004/api/conversations/${encodeURIComponent(currentChat.sender)}/mark-read`, {
                   method: 'POST',
                   headers: { 'x-api-key': 'your_secret_api_key_123' }
                 });
@@ -1831,7 +1831,7 @@
     async function cleanupHandles() {
       try {
         showToast('Đang cleanup duplicates...', 'info');
-        const response = await fetch('http://localhost:3000/api/cleanup-handles', {
+        const response = await fetch('http://localhost:4004/api/cleanup-handles', {
           method: 'POST',
           headers: { 'x-api-key': 'your_secret_api_key_123' }
         });

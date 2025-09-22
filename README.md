@@ -61,12 +61,12 @@ npm run receive # Chỉ WebSocket
 
 #### 1. Health Check
 ```bash
-GET http://localhost:3000/api/health
+GET http://localhost:4004/api/health
 ```
 
 #### 2. Gửi tin nhắn
 ```bash
-POST http://localhost:3000/api/send
+POST http://localhost:4004/api/send
 Content-Type: application/json
 x-api-key: your_secret_api_key_123
 
@@ -78,7 +78,7 @@ x-api-key: your_secret_api_key_123
 
 #### 3. Xem logs
 ```bash
-GET http://localhost:3000/api/logs
+GET http://localhost:4004/api/logs
 x-api-key: your_secret_api_key_123
 ```
 
@@ -87,7 +87,7 @@ x-api-key: your_secret_api_key_123
 Kết nối WebSocket để nhận tin nhắn realtime:
 
 ```javascript
-const socket = io('http://localhost:3000');
+const socket = io('http://localhost:4004');
 
 socket.on('connect', () => {
   console.log('Đã kết nối WebSocket');
@@ -105,17 +105,17 @@ socket.on('message.received', (message) => {
 
 ```bash
 # Test health check
-curl http://localhost:3000/api/health
+curl http://localhost:4004/api/health
 
 # Test gửi tin nhắn
-curl -X POST http://localhost:3000/api/send \
+curl -X POST http://localhost:4004/api/send \
   -H "Content-Type: application/json" \
   -H "x-api-key: your_secret_api_key_123" \
   -d '{"to":"+84123456789","body":"Test từ Blue Relay"}'
 
 # Xem logs
 curl -H "x-api-key: your_secret_api_key_123" \
-  http://localhost:3000/api/logs
+  http://localhost:4004/api/logs
 ```
 
 ### Test WebSocket với wscat
@@ -125,7 +125,7 @@ curl -H "x-api-key: your_secret_api_key_123" \
 npm install -g wscat
 
 # Kết nối WebSocket
-wscat -c ws://localhost:3000
+wscat -c ws://localhost:4004
 ```
 
 ## Cấu trúc project

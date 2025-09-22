@@ -1535,7 +1535,7 @@ async function startNgrok() {
     }
 }
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 4004;
 server.listen(PORT, async () => {
     console.log(`🔵 Blue Relay Tools Server running on http://localhost:${PORT}`);
     console.log(`📡 WebSocket available on ws://localhost:${PORT}`);

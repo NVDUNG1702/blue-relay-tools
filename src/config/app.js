@@ -5,7 +5,7 @@ dotenv.config();
 // Application configuration
 export const APP_CONFIG = {
     // Server settings
-    PORT: process.env.PORT || 3000,
+    PORT: process.env.PORT || 4004,
     API_KEY: process.env.API_KEY || 'your_secret_api_key_123',
     
     // Database settings

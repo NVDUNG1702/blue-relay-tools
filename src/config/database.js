@@ -1,8 +1,6 @@
 import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
-import dotenv from 'dotenv';
-
-dotenv.config();
+// dotenv is initialized once in src/server.js
 
 // Database configuration
 export const DB_CONFIG = {

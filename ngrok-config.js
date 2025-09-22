@@ -40,7 +40,7 @@ export const NGROK_INSTRUCTIONS = `
    - Set NGROK_AUTH_TOKEN in environment
 
 3. Access URLs:
-   - Local: http://localhost:3000
+   - Local: http://localhost:4004
    - Public: Check console output or /api/ngrok-url
 
 4. Mobile Testing:

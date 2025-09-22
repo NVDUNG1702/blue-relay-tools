@@ -1,5 +1,7 @@
 import ngrok from 'ngrok';
 import { APP_CONFIG } from './app.js';
+import dotenv from 'dotenv';
+dotenv.config();
 
 let ngrokUrl = null;
 let ngrokProcess = null;

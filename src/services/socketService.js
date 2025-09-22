@@ -211,6 +211,8 @@ class SocketService {
                 timestamp: new Date().toISOString()
             };
 
+            console.log('🔐 Authenticating device:', authData);
+            
             this.socket.emit('device:authenticate', authData);
 
             // Wait for authentication response
