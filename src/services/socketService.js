@@ -17,8 +17,15 @@ class SocketService {
         this.baseReconnectDelayMs = 3000; // 3s
         this.maxReconnectDelayMs = 60000; // 60s trần
         this.heartbeatInterval = null;
+        this.lastHeartbeatResponse = null;
+        this.heartbeatTimeout = null;
+        this.forceRestartAttempts = 0;
+        this.isAuthenticating = false;
         this.pendingMessages = [];
         this.messageQueue = [];
+        // Version handshake state
+        this.serverVersion = null; // phiên bản BE hiện tại mà Tools biết
+        this.lastKnownServerVersion = null; // lưu phiên bản gần nhất để so sánh thay đổi
 
         // Use singleton command handler instance
         this.commandHandler = socketCommandHandler;
@@ -66,6 +73,90 @@ class SocketService {
             console.error('❌ Failed to initialize Socket Service:', error.message);
             throw error;
         }
+    }
+
+    /**
+     * Force restart the entire socket service
+     */
+    async forceRestart() {
+        console.log('🔄 Force restarting Socket Service...');
+        
+        try {
+            // Clear all state
+            await this.clearAllState();
+            
+            // Reinitialize everything
+            await this.initialize();
+            
+            // Reset restart attempts counter
+            this.forceRestartAttempts = 0;
+            
+            console.log('✅ Socket Service force restarted successfully');
+        } catch (error) {
+            console.error('❌ Force restart failed:', error.message);
+            
+            // If force restart fails multiple times, restart the entire process
+            if (!this.forceRestartAttempts) {
+                this.forceRestartAttempts = 0;
+            }
+            this.forceRestartAttempts++;
+            
+            if (this.forceRestartAttempts >= 3) {
+                console.log('🔄 Force restart failed 3 times, restarting entire process...');
+                this.restartProcess();
+            } else {
+                throw error;
+            }
+        }
+    }
+
+    /**
+     * Restart the entire process
+     */
+    restartProcess() {
+        console.log('🔄 Restarting entire process...');
+        setTimeout(() => {
+            process.exit(1); // Let nodemon restart the process
+        }, 1000);
+    }
+
+    /**
+     * Clear all state and restart completely
+     */
+    async clearAllState() {
+        console.log('🧹 Clearing all state and restarting...');
+        
+        // Stop heartbeat
+        this.stopHeartbeat();
+        
+        // Disconnect existing socket
+        if (this.socket) {
+            console.log('🔌 Disconnecting existing socket');
+            this.socket.disconnect();
+            this.socket = null;
+        }
+        
+        // Reset all state variables
+        this.isConnected = false;
+        this.isAuthenticated = false;
+        this.reconnectAttempts = 0;
+        this.pendingMessages = [];
+        this.messageQueue = [];
+        this.deviceInfo = null;
+        this.lastHeartbeatResponse = null;
+        
+        // Clear any pending timeouts
+        if (this.heartbeatInterval) {
+            clearInterval(this.heartbeatInterval);
+            this.heartbeatInterval = null;
+        }
+        
+        if (this.heartbeatTimeout) {
+            clearTimeout(this.heartbeatTimeout);
+            this.heartbeatTimeout = null;
+        }
+        
+        console.log('✅ All state cleared, ready for fresh connection');
     }
 
     async getDeviceInfo() {
@@ -158,7 +249,7 @@ class SocketService {
 
             this.socket = io(this.serverUrl, {
                 transports: ['websocket', 'polling'],
-                timeout: 10000,
+                timeout: 20000,
                 forceNew: true,
                 reconnection: true,
                 // Không đặt reconnectionAttempts để dùng mặc định (không giới hạn)
@@ -199,6 +290,10 @@ class SocketService {
 
     async authenticate() {
         try {
+            if (this.isAuthenticated || this.isAuthenticating) {
+                return;
+            }
+            this.isAuthenticating = true;
             console.log('🔐 Authenticating device...');
 
             const authData = {
@@ -224,22 +319,27 @@ class SocketService {
                 this.socket.once('device:authenticated', (data) => {
                     clearTimeout(timeout);
                     this.isAuthenticated = true;
+                    this.isAuthenticating = false;
                     console.log('✅ Device authenticated successfully');
                     console.log('   MacRelay ID:', data.mac_relay_id);
                     console.log('   User ID:', data.user_id);
                     console.log('   Status:', data.status);
+                    // Yêu cầu phiên bản server ngay sau khi authenticated
+                    this.requestServerVersion();
                     resolve(data);
                 });
 
                 this.socket.once('device:auth_error', (error) => {
                     clearTimeout(timeout);
                     console.error('❌ Authentication failed:', error.message);
+                    this.isAuthenticating = false;
                     reject(new Error(error.message));
                 });
             });
 
         } catch (error) {
             console.error('❌ Authentication error:', error.message);
+            this.isAuthenticating = false;
             throw error;
         }
     }
@@ -247,19 +347,73 @@ class SocketService {
     setupEventHandlers() {
         if (!this.socket) return;
 
+        // Log all socket events for debugging
+        this.socket.onAny((eventName, ...args) => {
+            console.log(`🔍 [SocketService] Socket event received: ${eventName}`, args.length > 0 ? args[0] : '');
+        });
+
         // Connection events
         this.socket.on('disconnect', (reason) => {
             console.log('🔌 Disconnected from server:', reason);
             this.isConnected = false;
             this.isAuthenticated = false;
             this.stopHeartbeat();
-            this.handleReconnect();
+            // Để Socket.IO tự reconnection, không tự gọi handleReconnect/forceRestart ở đây
+        });
+
+        // Add connection error handling
+        this.socket.on('connect_error', (error) => {
+            console.log('❌ Connection error:', error.message);
+            this.isConnected = false;
+            this.isAuthenticated = false;
+        });
+
+        // Add reconnection handling
+        this.socket.on('reconnect', (attemptNumber) => {
+            console.log('🔄 Reconnected after', attemptNumber, 'attempts');
+            this.isConnected = true;
+            this.reconnectAttempts = 0;
+            // Yêu cầu lại phiên bản server sau khi reconnect
+            this.requestServerVersion();
+        });
+
+        this.socket.on('reconnect_error', (error) => {
+            console.log('❌ Reconnection error:', error.message);
+        });
+
+        this.socket.on('reconnect_failed', () => {
+            console.log('❌ Reconnection failed');
+            this.isConnected = false;
+            this.isAuthenticated = false;
         });
 
         this.socket.on('connect', () => {
             console.log('🔌 Reconnected to server');
             this.isConnected = true;
             this.reconnectAttempts = 0;
+            // Yêu cầu phiên bản server khi connect
+            this.requestServerVersion();
+            // Debounce re-auth
+            if (!this.isAuthenticated && !this.isAuthenticating) {
+                this.authenticate().catch(err => console.error('❌ Re-auth after connect failed:', err.message));
+            }
+        });
+
+        // Version handshake events
+        this.socket.on('server:version', (data) => {
+            const receivedVersion = data?.version || data?.server_version || null;
+            if (!receivedVersion) {
+                return;
+            }
+            this.serverVersion = receivedVersion;
+            if (this.lastKnownServerVersion && this.lastKnownServerVersion !== this.serverVersion) {
+                console.log('⚠️ Server version changed from', this.lastKnownServerVersion, 'to', this.serverVersion, '- force restarting Tools');
+                this.forceRestart().catch(err => console.error('❌ Force restart after version change failed:', err.message));
+                return;
+            }
+            if (!this.lastKnownServerVersion) {
+                this.lastKnownServerVersion = this.serverVersion;
+            }
         });
 
         // Device events
@@ -316,6 +470,11 @@ class SocketService {
         // API server commands
         this.socket.on('device:send_command', async (data) => {
             console.log('⚡ Received API server command:', data.command);
+            console.log('⚡ [SocketService] Socket ID:', this.socket.id);
+            console.log('⚡ [SocketService] Is authenticated:', this.isAuthenticated);
+            console.log('⚡ [SocketService] Socket connected:', this.socket.connected);
+            console.log('⚡ [SocketService] Command data:', JSON.stringify(data, null, 2));
+            console.log('⚡ [SocketService] Timestamp:', new Date().toISOString());
             try {
                 const result = await this.executeCommand(data.command, data.data);
                 this.sendCommandResponse(data.requestId, true, result, 'Command executed successfully');
@@ -331,6 +490,40 @@ class SocketService {
 
         this.socket.on('device:error', (error) => {
             console.error('❌ Device error:', error);
+        });
+
+        // Handle heartbeat response from server
+        this.socket.on('device:heartbeat_response', (data) => {
+            console.log('💓 Heartbeat response received from server');
+            this.lastHeartbeatResponse = Date.now();
+            // Kiểm tra version trong heartbeat nếu có
+            const hbVersion = data?.server_version || data?.version || null;
+            if (hbVersion) {
+                if (!this.serverVersion) {
+                    this.serverVersion = hbVersion;
+                }
+                if (!this.lastKnownServerVersion) {
+                    this.lastKnownServerVersion = hbVersion;
+                } else if (this.lastKnownServerVersion !== hbVersion) {
+                    console.log('⚠️ Heartbeat reports server version changed from', this.lastKnownServerVersion, 'to', hbVersion, '- force restarting Tools');
+                    this.forceRestart().catch(err => console.error('❌ Force restart after heartbeat version change failed:', err.message));
+                    return;
+                }
+            }
+            if (this.heartbeatTimeout) {
+                clearTimeout(this.heartbeatTimeout);
+                this.heartbeatTimeout = null;
+            }
+        });
+
+        // Handle server restart notification
+        this.socket.on('server:restart', () => {
+            console.log('🔄 Server restarted, requesting version and re-auth...');
+            this.requestServerVersion();
+            if (!this.isAuthenticating) {
+                this.isAuthenticated = false;
+                this.authenticate().catch(err => console.error('❌ Re-auth after server restart failed:', err.message));
+            }
         });
     }
 
@@ -408,26 +601,9 @@ class SocketService {
         };
     }
 
+    // Disable custom reconnect: rely on Socket.IO built-in reconnection
     handleReconnect() {
-        // Tính delay theo exponential backoff + jitter
-        const attempt = ++this.reconnectAttempts;
-        const expo = Math.min(this.baseReconnectDelayMs * Math.pow(2, attempt - 1), this.maxReconnectDelayMs);
-        const jitter = Math.floor(Math.random() * 1000); // 0-1s
-        const delay = expo + jitter;
-
-        console.log(`🔄 Attempting to reconnect in ${delay}ms... (attempt #${attempt})`);
-
-        setTimeout(async () => {
-            try {
-                await this.connect();
-                await this.authenticate();
-                this.startHeartbeat();
-                console.log('✅ Reconnected and re-authenticated');
-            } catch (error) {
-                console.error('❌ Reconnection failed:', error.message);
-                this.handleReconnect();
-            }
-        }, delay);
+        // no-op
     }
 
     startHeartbeat() {
@@ -437,6 +613,12 @@ class SocketService {
 
         this.heartbeatInterval = setInterval(() => {
             if (this.isConnected && this.isAuthenticated) {
+                // Check if last heartbeat was too long ago
+                if (this.lastHeartbeatResponse && Date.now() - this.lastHeartbeatResponse > 60000) {
+                    console.log('⚠️ No heartbeat response for 60s, server may be unstable - will rely on Socket.IO reconnection');
+                    return;
+                }
+
                 this.socket.emit('device:heartbeat', {
                     device_id: this.deviceId,
                     timestamp: new Date().toISOString(),
@@ -446,6 +628,20 @@ class SocketService {
                         uptime: process.uptime(),
                         memory_usage: process.memoryUsage()
                     }
+                });
+
+                // Set timeout for heartbeat response
+                if (this.heartbeatTimeout) {
+                    clearTimeout(this.heartbeatTimeout);
+                }
+                this.heartbeatTimeout = setTimeout(() => {
+                    console.log('⚠️ Heartbeat timeout, waiting for Socket.IO reconnection...');
+                }, 15000); // 15 second timeout
+            } else if (this.isConnected && !this.isAuthenticated) {
+                // If connected but not authenticated, try to re-authenticate
+                console.log('🔄 Connected but not authenticated, attempting re-authentication...');
+                this.authenticate().catch(error => {
+                    console.error('❌ Re-authentication failed:', error.message);
                 });
             }
         }, 30000); // Send heartbeat every 30 seconds
@@ -458,6 +654,11 @@ class SocketService {
             clearInterval(this.heartbeatInterval);
             this.heartbeatInterval = null;
             console.log('💓 Heartbeat stopped');
+        }
+        
+        if (this.heartbeatTimeout) {
+            clearTimeout(this.heartbeatTimeout);
+            this.heartbeatTimeout = null;
         }
     }
 
@@ -706,6 +907,17 @@ class SocketService {
         } catch (error) {
             console.error('Error getting inbox stats:', error);
             throw error;
+        }
+    }
+
+    // Version handshake helper
+    requestServerVersion() {
+        try {
+            if (this.socket && this.isConnected) {
+                this.socket.emit('server:get_version', { ts: Date.now() });
+            }
+        } catch (e) {
+            // ignore
         }
     }
 }
