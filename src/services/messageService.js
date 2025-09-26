@@ -13,6 +13,7 @@ class MessageService {
         this.lastMessageId = 0;
         this.isMonitoring = false;
         this.db = null;
+        this.SEND_FAIL_TIMEOUT_MS = Number(process.env.SEND_FAIL_TIMEOUT_MS || 10 * 60 * 1000);
     }
 
     /**
@@ -48,6 +49,23 @@ class MessageService {
      */
     async sendMessage(to, body) {
         try {
+            console.log('[MessageService] Attempting to send message...', {
+                to,
+                bodyPreview: typeof body === 'string' ? body.slice(0, 120) : body,
+                bodyLength: typeof body === 'string' ? body.length : 0,
+                timestamp: new Date().toISOString()
+            });
+            // Snapshot before sending to detect new records
+            let snapshot = null;
+            try {
+                const handleRow = await this.findHandleForRecipient(to);
+                if (handleRow) {
+                    snapshot = await this.getLastRowIdForHandle(handleRow.handle_id);
+                }
+            } catch (e) {
+                // ignore
+            }
+
             const result = await appleScript.sendMessage(to, body);
 
             const messageData = {
@@ -58,18 +76,212 @@ class MessageService {
             };
 
             if (result === 'success') {
-                await logger.logSentMessage(messageData);
-                return { success: true, result };
+                // Post-send verification with retry
+                const { verification, derivedStatus } = await this.verifySendWithRetry(to, snapshot);
+                console.log('[MessageService] Send success', {
+                    to,
+                    result,
+                    at: messageData.timestamp
+                });
+                await logger.logSentMessage({ ...messageData, verification, derivedStatus });
+                const success = derivedStatus !== 'failed';
+                return { success, result, verification, derivedStatus };
             } else {
                 messageData.status = 'failed';
                 messageData.error = result;
+                console.warn('[MessageService] Send failed', {
+                    to,
+                    error: result,
+                    at: messageData.timestamp
+                });
                 await logger.logError(result, messageData);
                 return { success: false, error: result };
             }
         } catch (error) {
+            console.error('[MessageService] Send threw error', {
+                to,
+                error: error?.message || String(error)
+            });
             await logger.logError(error, { to, body });
             return { success: false, error: error.message };
         }
+    }
+
+    /**
+     * Get last outbound message for a recipient from Messages DB
+     */
+    async getLastOutboundMessageForRecipient(recipient, sinceRowId = 0) {
+        const db = await getDatabase();
+        const handle = await this.findHandleForRecipient(recipient);
+        if (!handle) {
+            console.log(`[MessageService] No handle found for recipient: ${recipient}`);
+            return null;
+        }
+        
+        console.log(`[MessageService] Found handle for ${recipient}:`, handle);
+        
+        // Find all handles with the same ID (there can be multiple)
+        const allHandles = await db.all(`
+            SELECT ROWID as handle_id, id 
+            FROM handle 
+            WHERE id COLLATE NOCASE = ? COLLATE NOCASE
+        `, [recipient]);
+        
+        console.log(`[MessageService] All handles for ${recipient}:`, allHandles);
+        
+        if (allHandles.length === 0) return null;
+        
+        const handleIds = allHandles.map(h => h.handle_id);
+        const placeholders = handleIds.map(() => '?').join(',');
+        
+        const row = await db.get(`
+            SELECT 
+                m.ROWID AS rowid,
+                m.guid,
+                m.text,
+                m.attributedBody,
+                m.date,
+                datetime(m.date/1000000000 + strftime('%s', '2001-01-01'), 'unixepoch', 'localtime') AS readable_date,
+                m.is_from_me,
+                m.is_sent,
+                m.is_delivered,
+                m.is_finished,
+                m.error AS error,
+                m.service,
+                m.date_read,
+                m.date_delivered
+            FROM message m
+            WHERE m.handle_id IN (${placeholders})
+              AND m.is_from_me = 1 
+              AND (m.text IS NOT NULL OR m.attributedBody IS NOT NULL)
+              AND m.ROWID > ?
+            ORDER BY m.date DESC
+            LIMIT 1
+        `, [...handleIds, sinceRowId || 0]);
+        
+        console.log(`[MessageService] Query result for ${recipient} (sinceRowId: ${sinceRowId}):`, row ? {
+            rowid: row.rowid,
+            text: row.text?.slice(0, 50),
+            is_sent: row.is_sent,
+            is_delivered: row.is_delivered,
+            is_finished: row.is_finished,
+            error: row.error,
+            readable_date: row.readable_date
+        } : 'null');
+        
+        return row || null;
+    }
+
+    async findHandleForRecipient(recipient) {
+        const db = await getDatabase();
+        const candidates = this.generateRecipientCandidates(recipient);
+        for (const c of candidates) {
+            const row = await db.get(`
+                SELECT ROWID AS handle_id, id 
+                FROM handle 
+                WHERE id COLLATE NOCASE = ? COLLATE NOCASE 
+                LIMIT 1
+            `, [c]);
+            if (row) return row;
+        }
+        return null;
+    }
+
+    generateRecipientCandidates(recipient) {
+        const out = new Set();
+        if (!recipient) return [];
+        out.add(recipient);
+        out.add(String(recipient).toLowerCase());
+        // If looks like number, try variants
+        const digits = String(recipient).replace(/[^0-9+]/g, '');
+        if (digits) {
+            out.add(digits);
+            if (!digits.startsWith('tel:')) out.add(`tel:${digits}`);
+            // VN normalization guesses (safe to try as candidate without forcing)
+            if (digits.startsWith('0')) {
+                out.add(`+84${digits.slice(1)}`);
+                out.add(`tel:+84${digits.slice(1)}`);
+            }
+        }
+        return Array.from(out);
+    }
+
+    async getLastRowIdForHandle(handleId) {
+        const db = await getDatabase();
+        const row = await db.get(`SELECT MAX(ROWID) AS max_rowid FROM message WHERE handle_id = ?`, [handleId]);
+        return row?.max_rowid || 0;
+    }
+
+    async sleep(ms) { return new Promise(res => setTimeout(res, ms)); }
+
+    toUnixMsFromAppleNsEpoch(nsValue) {
+        if (!nsValue || isNaN(Number(nsValue))) return null;
+        const ns = Number(nsValue);
+        const msFrom2001 = ns / 1_000_000;
+        const unixMs = msFrom2001 + Date.UTC(2001, 0, 1);
+        return unixMs;
+    }
+
+    deriveStatusFromRow(row) {
+        if (!row) return { derivedStatus: 'unknown', failed: false };
+        const deliveredFlags = row.is_delivered === 1 || (row.date_delivered && Number(row.date_delivered) > 0);
+        const sentFlags = row.is_sent === 1;
+        const hasError = !!row.error && Number(row.error) !== 0;
+        if (hasError) return { derivedStatus: 'failed', failed: true };
+        if (deliveredFlags) return { derivedStatus: 'delivered', failed: false };
+        if (sentFlags) return { derivedStatus: 'sent', failed: false };
+        if (row.is_finished === 1 && row.is_sent === 0) return { derivedStatus: 'failed', failed: true };
+
+        // Timeout downgrade: outbound, not delivered for too long → failed
+        const nowMs = Date.now();
+        const baseMs = this.toUnixMsFromAppleNsEpoch(row.date) || (row.readable_date ? Date.parse(row.readable_date) : null);
+        if (row.is_from_me === 1 && !deliveredFlags && baseMs) {
+            const elapsed = nowMs - baseMs;
+            if (elapsed > this.SEND_FAIL_TIMEOUT_MS) {
+                return { derivedStatus: 'failed', failed: true };
+            }
+        }
+        return { derivedStatus: 'queued', failed: false };
+    }
+
+    async verifySendWithRetry(recipient, snapshotRowId, attempts = 5, delayMs = 400) {
+        let latest = null;
+        
+        // First, try to find any recent outbound message for this recipient (ignore sinceRowId initially)
+        for (let i = 0; i < attempts; i++) {
+            try {
+                latest = await this.getLastOutboundMessageForRecipient(recipient, 0);
+                if (latest) {
+                    console.log(`[MessageService] Found message on attempt ${i + 1}:`, {
+                        rowid: latest.rowid,
+                        text: latest.text?.slice(0, 50),
+                        is_sent: latest.is_sent,
+                        is_delivered: latest.is_delivered,
+                        is_finished: latest.is_finished,
+                        error: latest.error,
+                        readable_date: latest.readable_date
+                    });
+                    break;
+                }
+            } catch (err) {
+                console.log(`[MessageService] Attempt ${i + 1} failed:`, err.message);
+            }
+            await this.sleep(delayMs);
+        }
+        
+        const { derivedStatus } = this.deriveStatusFromRow(latest);
+        console.log(`[MessageService] Final verification result:`, { 
+            hasMessage: !!latest, 
+            derivedStatus,
+            messageInfo: latest ? {
+                rowid: latest.rowid,
+                is_sent: latest.is_sent,
+                is_delivered: latest.is_delivered,
+                error: latest.error
+            } : null
+        });
+        
+        return { verification: latest || null, derivedStatus };
     }
 
     /**
@@ -263,6 +475,9 @@ class MessageService {
                 }
             }
 
+            // Use deriveStatusFromRow for accurate status determination
+            const { derivedStatus } = this.deriveStatusFromRow(msg);
+            
             return {
                 id: msg.id,
                 sender_phone: senderId,
@@ -270,7 +485,10 @@ class MessageService {
                 content: content || "",
                 message_type: messageType,
                 direction: msg.is_from_me === 1 ? "outbound" : "inbound",
-                status: msg.is_delivered === 1 ? "delivered" : msg.is_sent === 1 ? "sent" : "received",
+                status: derivedStatus === 'failed' ? 'failed' : 
+                       derivedStatus === 'delivered' ? 'delivered' : 
+                       derivedStatus === 'sent' ? 'sent' : 
+                       derivedStatus === 'queued' ? 'sent' : 'received', // map queued to sent for UI
                 created_at: msg.readable_date,
                 updated_at: msg.readable_date,
                 has_rich_content: !!msg.attributedBody,
@@ -343,6 +561,9 @@ class MessageService {
                 }
             }
 
+            // Use deriveStatusFromRow for accurate status determination
+            const { derivedStatus } = this.deriveStatusFromRow(msg);
+            
             return {
                 id: msg.id,
                 sender_phone: senderId,
@@ -350,7 +571,10 @@ class MessageService {
                 content: content || "",
                 message_type: messageType,
                 direction: msg.is_from_me === 1 ? "outbound" : "inbound",
-                status: msg.is_delivered === 1 ? "delivered" : msg.is_sent === 1 ? "sent" : "received",
+                status: derivedStatus === 'failed' ? 'failed' : 
+                       derivedStatus === 'delivered' ? 'delivered' : 
+                       derivedStatus === 'sent' ? 'sent' : 
+                       derivedStatus === 'queued' ? 'sent' : 'received', // map queued to sent for UI
                 created_at: msg.readable_date,
                 updated_at: msg.readable_date,
                 has_rich_content: !!msg.attributedBody,
@@ -605,7 +829,9 @@ class MessageService {
             `, [senderHandleId]);
 
             const totalCount = countResult?.count || 0;
-            console.log(`📊 Total message count for sender "${sender}": ${totalCount}`);
+            if (process.env.VERBOSE_INBOX_LOG === 'true') {
+                console.log(`📊 Total message count for sender "${sender}": ${totalCount}`);
+            }
 
             return {
                 success: true,

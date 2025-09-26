@@ -30,6 +30,9 @@ class SocketService {
         // Use singleton command handler instance
         this.commandHandler = socketCommandHandler;
 
+        // Verbose logs for inbox-related queries
+        this.VERBOSE_INBOX_LOG = process.env.VERBOSE_INBOX_LOG === 'true';
+
         // Server configuration
         this.serverUrl = DEVICE_CONFIG.BLUE_RELAY_SERVER_URL;
         this.apiKey = DEVICE_CONFIG.BLUE_RELAY_API_KEY;
@@ -264,7 +267,7 @@ class SocketService {
             await new Promise((resolve, reject) => {
                 const timeout = setTimeout(() => {
                     reject(new Error('Connection timeout'));
-                }, 10000);
+                }, 20000);
 
                 this.socket.on('connect', () => {
                     clearTimeout(timeout);
@@ -314,7 +317,7 @@ class SocketService {
             await new Promise((resolve, reject) => {
                 const timeout = setTimeout(() => {
                     reject(new Error('Authentication timeout'));
-                }, 10000);
+                }, 20000);
 
                 this.socket.once('device:authenticated', (data) => {
                     clearTimeout(timeout);
@@ -635,7 +638,7 @@ class SocketService {
                     clearTimeout(this.heartbeatTimeout);
                 }
                 this.heartbeatTimeout = setTimeout(() => {
-                    console.log('⚠️ Heartbeat timeout, waiting for Socket.IO reconnection...');
+                    // console.log('⚠️ Heartbeat timeout, waiting for Socket.IO reconnection...');
                 }, 15000); // 15 second timeout
             } else if (this.isConnected && !this.isAuthenticated) {
                 // If connected but not authenticated, try to re-authenticate
@@ -721,7 +724,9 @@ class SocketService {
             message: message || (success ? 'Command executed successfully' : 'Command failed')
         };
 
-        console.log(`📨 Sending command response:`, response);
+        if (this.VERBOSE_INBOX_LOG) {
+            console.log(`📨 Sending command response:`, response);
+        }
         this.socket.emit('device:command_response', response);
     }
 
@@ -758,7 +763,9 @@ class SocketService {
     // New methods for conversations and messages
     async getConversations(params = {}) {
         try {
-            console.log('📋 Getting conversations...');
+            if (this.VERBOSE_INBOX_LOG) {
+                console.log('📋 Getting conversations...');
+            }
             const messageService = await import('./messageService.js');
             const result = await messageService.default.getConversations(params.limit || 20);
 
@@ -796,7 +803,9 @@ class SocketService {
 
     async getConversationMessages(params = {}) {
         try {
-            console.log('📨 SocketService: getConversationMessages called with:', params);
+            if (this.VERBOSE_INBOX_LOG) {
+                console.log('📨 SocketService: getConversationMessages called with:', params);
+            }
             const { sender, limit = 50, page = 1, offset = 0 } = params;
 
             if (!sender || sender.trim() === '') {
@@ -809,10 +818,14 @@ class SocketService {
             const parsedOffsetInput = Math.max(parseInt(offset) || 0, 0);
             const computedOffset = parsedOffsetInput > 0 ? parsedOffsetInput : (parsedPage - 1) * parsedLimit;
 
-            console.log(`📞 SocketService: Calling messageService with sender: ${sender}, limit: ${parsedLimit}, page: ${parsedPage}, computedOffset: ${computedOffset}`);
+            if (this.VERBOSE_INBOX_LOG) {
+                console.log(`📞 SocketService: Calling messageService with sender: ${sender}, limit: ${parsedLimit}, page: ${parsedPage}, computedOffset: ${computedOffset}`);
+            }
             const messageService = await import('./messageService.js');
             const result = await messageService.default.getMessages(sender.trim(), parsedLimit, computedOffset);
-            console.log(`📨 SocketService: messageService result:`, { success: result.success, messageCount: result.messages?.length, total: result.total, page: result.page, totalPages: result.totalPages });
+            if (this.VERBOSE_INBOX_LOG) {
+                console.log(`📨 SocketService: messageService result:`, { success: result.success, messageCount: result.messages?.length, total: result.total, page: result.page, totalPages: result.totalPages });
+            }
 
             if (!result.success) {
                 throw new Error(result.error || 'Failed to get messages from messageService');
@@ -825,7 +838,9 @@ class SocketService {
             const totalCountResult = await messageService.default.getMessageCount(sender.trim());
             const totalMessages = totalCountResult.success ? totalCountResult.count : (result.total || 0);
 
-            console.log(`✅ SocketService: Returning ${messages.length} messages for page ${parsedPage}, total: ${totalMessages}`);
+            if (this.VERBOSE_INBOX_LOG) {
+                console.log(`✅ SocketService: Returning ${messages.length} messages for page ${parsedPage}, total: ${totalMessages}`);
+            }
             return {
                 messages,
                 total: totalMessages,

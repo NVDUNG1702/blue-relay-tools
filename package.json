@@ -23,7 +23,9 @@
     "test:icloud": "node test-icloud-detection.js",
     "test:icloud:api": "node test-icloud-detection.js --api",
     "test:icloud:all": "node test-icloud-detection.js --with-api",
-    "write:icloud:env": "./write-icloud-to-env.sh"
+    "write:icloud:env": "./write-icloud-to-env.sh",
+    "dump:messages": "node src/scripts/dumpMessages.js",
+    "test:send": "node src/scripts/testSend.js"
   },
   "keywords": [
     "imessage",

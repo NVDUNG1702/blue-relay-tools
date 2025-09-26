@@ -8,7 +8,17 @@ const router = express.Router();
 router.use(authenticateApiKey);
 
 // Message routes
-router.post('/send', messageController.sendMessage);
+router.post('/send', (req, res, next) => {
+    console.log('[HTTP] /api/send payload', {
+        to: req?.body?.to,
+        bodyPreview: typeof req?.body?.body === 'string' ? req.body.body.slice(0, 120) : req?.body?.body,
+        at: new Date().toISOString()
+    });
+    return messageController.sendMessage(req, res).catch((err) => {
+        console.error('[HTTP] /api/send error', err?.message || err);
+        next(err);
+    });
+});
 router.get('/logs', messageController.getLogs);
 router.delete('/logs', messageController.clearLogs);
 

@@ -11,6 +11,7 @@ class SocketCommandHandler {
         this.commands = new Map();
         this.conversationMergeService = new ConversationMergeService();
         this.setupCommands();
+        this.VERBOSE_INBOX_LOG = process.env.VERBOSE_INBOX_LOG === 'true';
     }
 
     /**
@@ -225,7 +226,9 @@ class SocketCommandHandler {
      * Handle get conversation messages command
      */
     async handleGetConversationMessages(data) {
-        console.log(`🎯 SocketCommandHandler: handleGetConversationMessages called with:`, data);
+        if (this.VERBOSE_INBOX_LOG) {
+            console.log(`🎯 SocketCommandHandler: handleGetConversationMessages called with:`, data);
+        }
         const { sender, page = 1, limit = 50 } = data;
 
         if (!sender) {
@@ -237,20 +240,26 @@ class SocketCommandHandler {
         const parsedPage = Math.max(parseInt(page) || 1, 1); // Min page 1
         const offset = (parsedPage - 1) * parsedLimit;
 
-        console.log(`📞 Calling messageService.getMessages for sender: ${sender}, limit: ${parsedLimit}, page: ${parsedPage}, offset: ${offset}`);
+        if (this.VERBOSE_INBOX_LOG) {
+            console.log(`📞 Calling messageService.getMessages for sender: ${sender}, limit: ${parsedLimit}, page: ${parsedPage}, offset: ${offset}`);
+        }
 
         // Force fresh data by adding request ID
         const requestId = `${Date.now()}-${Math.random()}`;
-        console.log(`🔍 Request ID: ${requestId}`);
+        if (this.VERBOSE_INBOX_LOG) {
+            console.log(`🔍 Request ID: ${requestId}`);
+        }
 
         const result = await messageService.getMessages(sender, parsedLimit, offset);
-        console.log(`📨 messageService.getMessages result:`, { 
-            success: result.success, 
-            messageCount: result.messages?.length,
-            total: result.total,
-            page: result.page,
-            totalPages: result.totalPages
-        });
+        if (this.VERBOSE_INBOX_LOG) {
+            console.log(`📨 messageService.getMessages result:`, {
+                success: result.success,
+                messageCount: result.messages?.length,
+                total: result.total,
+                page: result.page,
+                totalPages: result.totalPages
+            });
+        }
 
         if (!result.success) {
             throw new Error(result.error);
@@ -263,14 +272,16 @@ class SocketCommandHandler {
         const totalResult = await messageService.getMessageCount(sender);
         const totalMessages = totalResult.success ? totalResult.count : 0;
 
-        console.log(`✅ SocketCommandHandler: Returning ${messages.length} messages for page ${parsedPage}, total: ${totalMessages}`);
-        console.log(`🔍 Final return object:`, {
-            messages: messages.length,
-            total: totalMessages,
-            page: parsedPage,
-            limit: parsedLimit,
-            hasMore: messages.length === parsedLimit && (offset + messages.length) < totalMessages
-        });
+        if (this.VERBOSE_INBOX_LOG) {
+            console.log(`✅ SocketCommandHandler: Returning ${messages.length} messages for page ${parsedPage}, total: ${totalMessages}`);
+            console.log(`🔍 Final return object:`, {
+                messages: messages.length,
+                total: totalMessages,
+                page: parsedPage,
+                limit: parsedLimit,
+                hasMore: messages.length === parsedLimit && (offset + messages.length) < totalMessages
+            });
+        }
         return {
             messages,
             total: totalMessages,
@@ -285,7 +296,12 @@ class SocketCommandHandler {
      */
     async handleSendMessage(data) {
         const { recipient, content } = data;
-        console.log({ data });
+        console.log('[SocketCommandHandler] handleSendMessage', {
+            to: recipient,
+            bodyPreview: typeof content === 'string' ? content.slice(0, 120) : content,
+            bodyLength: typeof content === 'string' ? content.length : 0,
+            at: new Date().toISOString()
+        });
 
 
         if (!recipient || !content) {
@@ -293,13 +309,15 @@ class SocketCommandHandler {
         }
 
         const result = await messageService.sendMessage(recipient, content);
+        console.log('[SocketCommandHandler] sendMessage result', result);
 
         if (!result.success) {
+            console.warn('[SocketCommandHandler] sendMessage failed', { to: recipient, error: result.error });
             throw new Error(result.error);
         }
 
         // Return mock response (will be replaced with real response)
-        return {
+        const response = {
             message: {
                 id: Date.now(),
                 sender_phone: recipient,
@@ -307,7 +325,9 @@ class SocketCommandHandler {
                 content: content,
                 message_type: 'iMessage',
                 direction: 'outbound',
-                status: 'sent',
+                status: result.derivedStatus || ((result.verification?.is_finished === 1 && result.verification?.is_delivered === 1)
+                    ? 'delivered'
+                    : (result.verification?.is_sent === 1 ? 'sent' : 'queued')),
                 created_at: new Date().toISOString(),
                 updated_at: new Date().toISOString()
             },
@@ -315,8 +335,15 @@ class SocketCommandHandler {
                 id: 5,
                 device_name: 'Dungkuro MacBook',
                 device_id: 'dungkuro-macbook-001'
-            }
+            },
+            verification: result.verification || null
         };
+        console.log('[SocketCommandHandler] handleSendMessage response', {
+            to: recipient,
+            status: response.message.status,
+            at: response.message.created_at
+        });
+        return response;
     }
 
     /**

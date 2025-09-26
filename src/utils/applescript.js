@@ -34,7 +34,11 @@ class AppleScriptUtil {
      * @returns {Promise<string>}
      */
     async sendMessage(to, body) {
-        console.log("send message: ", { to, body });
+        console.log("[AppleScript] sendMessage called", {
+            to,
+            bodyPreview: typeof body === 'string' ? body.slice(0, 120) : body,
+            bodyLength: typeof body === 'string' ? body.length : 0
+        });
 
         // Escape quotes to prevent AppleScript injection
         const escapedTo = to.replace(/"/g, '\\"');
@@ -51,7 +55,11 @@ class AppleScriptUtil {
             end try
         end tell`;
 
-        return await this.execute(script);
+        const execStart = Date.now();
+        const res = await this.execute(script);
+        const ms = Date.now() - execStart;
+        console.log('[AppleScript] result', { result: res, durationMs: ms });
+        return res;
     }
 
     /**

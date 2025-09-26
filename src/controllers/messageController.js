@@ -15,6 +15,13 @@ class MessageController {
     sendMessage = asyncHandler(async (req, res) => {
         const { to, body } = req.body;
 
+        console.log('[HTTP] POST /api/messages.send', {
+            to,
+            bodyPreview: typeof body === 'string' ? body.slice(0, 120) : body,
+            bodyLength: typeof body === 'string' ? body.length : 0,
+            at: new Date().toISOString()
+        });
+
         // Validate input
         const validation = messageParser.validateMessage({ to, body });
         if (!validation.isValid) {
@@ -30,6 +37,7 @@ class MessageController {
 
         // Send message
         const result = await messageService.sendMessage(to, sanitizedBody);
+        console.log('[HTTP] messages.send result', result);
 
         if (result.success) {
             res.json(result);

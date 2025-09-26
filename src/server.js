@@ -102,26 +102,39 @@ io.on('connection', socket => {
     socket.on('fe:send_message', async (data) => {
         const { deviceId, message } = data;
 
-        console.log(`📤 Frontend sending message:`, { deviceId, message });
+        console.log(`📤 Frontend sending message:`, {
+            deviceId,
+            to: message?.to,
+            contentPreview: message?.content?.slice?.(0, 120),
+            contentLength: message?.content?.length ?? 0,
+            at: new Date().toISOString()
+        });
 
         try {
             const result = await messageService.sendMessage(message.to, message.content);
 
             if (result.success) {
+                console.log('✅ fe:send_message success', { to: message.to });
                 socket.emit('fe:message_sent', {
                     success: true,
-                    message: 'Message sent successfully'
+                    message: 'Message sent successfully',
+                    to: message.to,
+                    verification: result.verification || null
                 });
             } else {
+                console.warn('⚠️  fe:send_message failed', { to: message.to, error: result.error });
                 socket.emit('fe:message_sent', {
                     success: false,
-                    message: result.error
+                    message: result.error,
+                    to: message.to
                 });
             }
         } catch (error) {
+            console.error('❌ fe:send_message error', { to: message?.to, error: error?.message });
             socket.emit('fe:message_sent', {
                 success: false,
-                message: error.message
+                message: error.message,
+                to: message?.to
             });
         }
     });
